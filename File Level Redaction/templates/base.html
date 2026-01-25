@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Redaction System</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body class="bg-light">
+
+<nav class="navbar navbar-dark bg-dark px-3">
+  <span class="navbar-brand">File Redaction System</span>
+  {% if current_user.is_authenticated %}
+  <a href="/logout" class="btn btn-danger">Logout</a>
+  {% endif %}
+</nav>
+
+<div class="container mt-4">
+  {% block content %}{% endblock %}
+</div>
+
+</body>
+</html>
