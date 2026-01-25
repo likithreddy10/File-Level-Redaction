@@ -1,4 +1,7 @@
-flask
-flask-login
-flask-sqlalchemy
-PyPDF2
+Flask
+Flask-Login
+Flask-SQLAlchemy
+Werkzeug
+PyMuPDF
+opencv-python-headless
+openpyxl

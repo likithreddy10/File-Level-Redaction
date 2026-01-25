@@ -140,56 +140,6 @@ def upload_image():
 
     return render_template("dashboard.html", image_file='blurred_' + filename)
 
-
-# ---------------- EXCEL REDACTION ----------------
-@app.route('/upload_excel', methods=['POST'])
-@login_required
-def upload_excel():
-    file = request.files['excel']
-    filename = secure_filename(file.filename)
-
-    input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    output_path = os.path.join(app.config['UPLOAD_FOLDER'], 'redacted_' + filename)
-
-    file.save(input_path)
-
-    wb = load_workbook(input_path)
-    ws = wb.active
-
-    for row in ws.iter_rows():
-        for cell in row:
-            if isinstance(cell.value, str):
-                if "@" in cell.value or cell.value.isdigit():
-                    cell.value = "XXXXXX"
-
-    wb.save(output_path)
-
-    return render_template("dashboard.html", excel_file='redacted_' + filename)
-
-# ---------------- TEXT REDACTION ----------------
-@app.route('/text_redaction', methods=['GET', 'POST'])
-@login_required
-def text_redaction():
-    redacted_text = None
-
-    if request.method == 'POST':
-        original_text = request.form.get('text')
-
-        # Automatic redaction using regex
-        redacted_text = original_text
-
-        # Email
-        redacted_text = re.sub(r'\S+@\S+', '████', redacted_text)
-
-        # Phone numbers
-        redacted_text = re.sub(r'\b\d{10}\b', '████', redacted_text)
-
-        # Aadhaar-like numbers
-        redacted_text = re.sub(r'\b\d{12}\b', '████', redacted_text)
-
-    return render_template('text_redaction.html', redacted_text=redacted_text)
-
-
 # ---------------- DOWNLOAD ----------------
 @app.route('/download/<filename>')
 @login_required
@@ -205,4 +155,5 @@ if __name__ == '__main__':
     with app.app_context():
         db.create_all()
 
-    app.run(debug=True)
+    if __name__ == "__main__":
+        app.run()
