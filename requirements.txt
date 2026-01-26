@@ -4,3 +4,4 @@ Flask-Login
 Werkzeug
 PyMuPDF
 opencv-python-headless
+gunicorn
