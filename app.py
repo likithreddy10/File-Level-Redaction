@@ -1,13 +1,12 @@
-from flask import Flask, render_template, request, redirect, url_for, send_from_directory
+from flask import Flask, render_template, request, redirect, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.utils import secure_filename
 
 import os
 import re
-import fitz   # PyMuPDF for PDF
-import cv2    # OpenCV for image
-from openpyxl import load_workbook
+import fitz
+import cv2
 
 app = Flask(__name__)
 app.secret_key = "secretkey"
@@ -27,7 +26,6 @@ class User(UserMixin, db.Model):
     username = db.Column(db.String(150), unique=True)
     password = db.Column(db.String(150))
 
-
 @login_manager.user_loader
 def load_user(user_id):
     return User.query.get(int(user_id))
@@ -38,7 +36,6 @@ def load_user(user_id):
 def home():
     return redirect('/login')
 
-
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
@@ -47,7 +44,6 @@ def register():
         db.session.commit()
         return redirect('/login')
     return render_template('register.html')
-
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -58,12 +54,10 @@ def login():
             return redirect('/dashboard')
     return render_template('login.html')
 
-
 @app.route('/dashboard')
 @login_required
 def dashboard():
     return render_template('dashboard.html')
-
 
 @app.route('/logout')
 def logout():
@@ -72,6 +66,7 @@ def logout():
 
 
 # ---------------- PDF REDACTION ----------------
+
 @app.route('/upload_pdf', methods=['POST'])
 @login_required
 def upload_pdf():
@@ -85,20 +80,28 @@ def upload_pdf():
 
     doc = fitz.open(input_path)
 
+    # Strong regex patterns
     patterns = [
-        r'\b\d{10}\b',       # Phone numbers
-        r'\b\d{12}\b',       # Aadhaar-like numbers
-        r'\S+@\S+',          # Emails
+        r'\b[6-9]\d{9}\b',                              # Indian phone
+        r'\b\d{12}\b',                                  # Aadhaar continuous
+        r'\b\d{4}\s\d{4}\s\d{4}\b',                     # Aadhaar spaced
+        r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',  # Email
+        r'https?://[^\s]+|www\.[^\s]+',                # URLs
+        r'\b(?:\d{1,3}\.){3}\d{1,3}\b',                 # IP address
+        r'\b[A-Z]{5}[0-9]{4}[A-Z]\b',                   # PAN card
+        r'\b[A-Z]{4}0[A-Z0-9]{6}\b',                    # IFSC code
+        r'\b(?:\d[ -]*?){13,16}\b',                     # Card numbers
+        r'\b(password|secret|apikey|token|confidential|private|otp)\b',  # Keywords
     ]
 
     for page in doc:
         text = page.get_text()
 
         for pattern in patterns:
-            matches = re.findall(pattern, text)
+            matches = re.findall(pattern, text, flags=re.IGNORECASE)
 
             for match in matches:
-                areas = page.search_for(match)
+                areas = page.search_for(str(match))
                 for area in areas:
                     page.add_redact_annot(area, fill=(0, 0, 0))
 
@@ -107,8 +110,6 @@ def upload_pdf():
     doc.save(output_path)
 
     return render_template("dashboard.html", pdf_file='redacted_' + filename)
-
-
 
 # ---------------- IMAGE FACE BLUR ----------------
 def blur_faces(input_path, output_path):
@@ -125,7 +126,6 @@ def blur_faces(input_path, output_path):
 
     cv2.imwrite(output_path, img)
 
-
 @app.route('/upload_image', methods=['POST'])
 @login_required
 def upload_image():
@@ -139,6 +139,24 @@ def upload_image():
     blur_faces(input_path, output_path)
 
     return render_template("dashboard.html", image_file='blurred_' + filename)
+
+
+# ---------------- TEXT REDACTION ----------------
+@app.route('/text_redaction', methods=['GET', 'POST'])
+@login_required
+def text_redaction():
+    redacted_text = None
+
+    if request.method == 'POST':
+        original_text = request.form.get('text')
+        redacted_text = original_text
+
+        redacted_text = re.sub(r'\S+@\S+', '████', redacted_text)
+        redacted_text = re.sub(r'\b\d{10}\b', '████', redacted_text)
+        redacted_text = re.sub(r'\b\d{12}\b', '████', redacted_text)
+
+    return render_template('text_redaction.html', redacted_text=redacted_text)
+
 
 # ---------------- DOWNLOAD ----------------
 @app.route('/download/<filename>')
@@ -155,5 +173,4 @@ if __name__ == '__main__':
     with app.app_context():
         db.create_all()
 
-    if __name__ == "__main__":
-        app.run()
+    app.run(host="0.0.0.0", port=10000)

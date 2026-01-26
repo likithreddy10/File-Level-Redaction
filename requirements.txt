@@ -4,4 +4,4 @@ Flask-SQLAlchemy
 Werkzeug
 PyMuPDF
 opencv-python-headless
-openpyxl
+gunicorn
