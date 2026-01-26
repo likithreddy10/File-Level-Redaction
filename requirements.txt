@@ -1,7 +1,6 @@
 Flask
-Flask-Login
 Flask-SQLAlchemy
+Flask-Login
 Werkzeug
 PyMuPDF
 opencv-python-headless
-gunicorn

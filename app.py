@@ -1,21 +1,29 @@
-from flask import Flask, render_template, request, redirect, send_from_directory
+from flask import Flask, render_template, request, redirect, send_from_directory, flash
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.utils import secure_filename
 
 import os
 import re
-import fitz
+import fitz  # PyMuPDF
 import cv2
 
-app = Flask(__name__)
-app.secret_key = "secretkey"
+# ---------------- CONFIG ----------------
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
-app.config['UPLOAD_FOLDER'] = 'uploads'
+UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
+DB_PATH = os.path.join(BASE_DIR, "database.db")
+
+app = Flask(__name__)
+app.secret_key = "supersecretkey"
+
+app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
+app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DB_PATH}"
+app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024  # 20MB limit
 
 db = SQLAlchemy(app)
 
+# ---------------- LOGIN ----------------
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = "login"
@@ -31,93 +39,109 @@ def load_user(user_id):
     return User.query.get(int(user_id))
 
 
-# ---------------- BASIC ROUTES ----------------
-@app.route('/')
+# ---------------- ROUTES ----------------
+@app.route("/")
 def home():
-    return redirect('/login')
+    return redirect("/login")
 
-@app.route('/register', methods=['GET', 'POST'])
+
+@app.route("/register", methods=["GET", "POST"])
 def register():
-    if request.method == 'POST':
-        user = User(username=request.form['username'], password=request.form['password'])
+    if request.method == "POST":
+        existing = User.query.filter_by(username=request.form["username"]).first()
+        if existing:
+            flash("Username already exists")
+            return redirect("/register")
+
+        user = User(username=request.form["username"], password=request.form["password"])
         db.session.add(user)
         db.session.commit()
-        return redirect('/login')
-    return render_template('register.html')
+        return redirect("/login")
 
-@app.route('/login', methods=['GET', 'POST'])
+    return render_template("register.html")
+
+
+@app.route("/login", methods=["GET", "POST"])
 def login():
-    if request.method == 'POST':
-        user = User.query.filter_by(username=request.form['username']).first()
-        if user and user.password == request.form['password']:
+    if request.method == "POST":
+        user = User.query.filter_by(username=request.form["username"]).first()
+        if user and user.password == request.form["password"]:
             login_user(user)
-            return redirect('/dashboard')
-    return render_template('login.html')
+            return redirect("/dashboard")
+        else:
+            flash("Invalid credentials")
 
-@app.route('/dashboard')
+    return render_template("login.html")
+
+
+@app.route("/dashboard")
 @login_required
 def dashboard():
-    return render_template('dashboard.html')
+    return render_template("dashboard.html")
 
-@app.route('/logout')
+
+@app.route("/logout")
+@login_required
 def logout():
     logout_user()
-    return redirect('/login')
+    return redirect("/login")
 
 
 # ---------------- PDF REDACTION ----------------
-
-@app.route('/upload_pdf', methods=['POST'])
+@app.route("/upload_pdf", methods=["POST"])
 @login_required
 def upload_pdf():
-    file = request.files['pdf']
-    filename = secure_filename(file.filename)
+    file = request.files.get("pdf")
+    if not file:
+        return "No file uploaded", 400
 
-    input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    output_path = os.path.join(app.config['UPLOAD_FOLDER'], 'redacted_' + filename)
+    filename = secure_filename(file.filename)
+    input_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+    output_path = os.path.join(app.config["UPLOAD_FOLDER"], "redacted_" + filename)
 
     file.save(input_path)
 
-    doc = fitz.open(input_path)
+    try:
+        doc = fitz.open(input_path)
 
-    # Strong regex patterns
-    patterns = [
-        r'\b[6-9]\d{9}\b',                              # Indian phone
-        r'\b\d{12}\b',                                  # Aadhaar continuous
-        r'\b\d{4}\s\d{4}\s\d{4}\b',                     # Aadhaar spaced
-        r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',  # Email
-        r'https?://[^\s]+|www\.[^\s]+',                # URLs
-        r'\b(?:\d{1,3}\.){3}\d{1,3}\b',                 # IP address
-        r'\b[A-Z]{5}[0-9]{4}[A-Z]\b',                   # PAN card
-        r'\b[A-Z]{4}0[A-Z0-9]{6}\b',                    # IFSC code
-        r'\b(?:\d[ -]*?){13,16}\b',                     # Card numbers
-        r'\b(password|secret|apikey|token|confidential|private|otp)\b',  # Keywords
-    ]
+        patterns = [
+            r'\b[6-9]\d{9}\b',
+            r'\b\d{4}\s\d{4}\s\d{4}\b',
+            r'\b\d{12}\b',
+            r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b',
+            r'https?://\S+|www\.\S+',
+            r'\b[A-Z]{5}[0-9]{4}[A-Z]\b',
+            r'\b(password|secret|apikey|token|confidential|otp)\b',
+        ]
 
-    for page in doc:
-        text = page.get_text()
+        for page in doc:
+            text = page.get_text()
+            for pattern in patterns:
+                matches = re.findall(pattern, text, re.IGNORECASE)
+                for match in matches:
+                    for rect in page.search_for(match):
+                        page.add_redact_annot(rect, fill=(0, 0, 0))
+            page.apply_redactions()
 
-        for pattern in patterns:
-            matches = re.findall(pattern, text, flags=re.IGNORECASE)
+        doc.save(output_path)
+        doc.close()
 
-            for match in matches:
-                areas = page.search_for(str(match))
-                for area in areas:
-                    page.add_redact_annot(area, fill=(0, 0, 0))
+        return render_template("dashboard.html", pdf_file="redacted_" + filename)
 
-        page.apply_redactions()
+    except Exception as e:
+        return f"PDF Error: {str(e)}", 500
 
-    doc.save(output_path)
-
-    return render_template("dashboard.html", pdf_file='redacted_' + filename)
 
 # ---------------- IMAGE FACE BLUR ----------------
 def blur_faces(input_path, output_path):
-    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
     img = cv2.imread(input_path)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    if img is None:
+        raise Exception("Invalid image")
 
-    faces = face_cascade.detectMultiScale(gray, 1.2, 4)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+
+    faces = face_cascade.detectMultiScale(gray, 1.3, 5)
 
     for (x, y, w, h) in faces:
         roi = img[y:y+h, x:x+w]
@@ -126,49 +150,37 @@ def blur_faces(input_path, output_path):
 
     cv2.imwrite(output_path, img)
 
-@app.route('/upload_image', methods=['POST'])
+
+@app.route("/upload_image", methods=["POST"])
 @login_required
 def upload_image():
-    file = request.files['image']
-    filename = secure_filename(file.filename)
+    file = request.files.get("image")
+    if not file:
+        return "No image uploaded", 400
 
-    input_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    output_path = os.path.join(app.config['UPLOAD_FOLDER'], 'blurred_' + filename)
+    filename = secure_filename(file.filename)
+    input_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+    output_path = os.path.join(app.config["UPLOAD_FOLDER"], "blurred_" + filename)
 
     file.save(input_path)
-    blur_faces(input_path, output_path)
 
-    return render_template("dashboard.html", image_file='blurred_' + filename)
-
-
-# ---------------- TEXT REDACTION ----------------
-@app.route('/text_redaction', methods=['GET', 'POST'])
-@login_required
-def text_redaction():
-    redacted_text = None
-
-    if request.method == 'POST':
-        original_text = request.form.get('text')
-        redacted_text = original_text
-
-        redacted_text = re.sub(r'\S+@\S+', '████', redacted_text)
-        redacted_text = re.sub(r'\b\d{10}\b', '████', redacted_text)
-        redacted_text = re.sub(r'\b\d{12}\b', '████', redacted_text)
-
-    return render_template('text_redaction.html', redacted_text=redacted_text)
+    try:
+        blur_faces(input_path, output_path)
+        return render_template("dashboard.html", image_file="blurred_" + filename)
+    except Exception as e:
+        return f"Image Error: {str(e)}", 500
 
 
 # ---------------- DOWNLOAD ----------------
-@app.route('/download/<filename>')
+@app.route("/download/<filename>")
 @login_required
 def download(filename):
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename, as_attachment=True)
+    return send_from_directory(app.config["UPLOAD_FOLDER"], filename, as_attachment=True)
 
 
-# ---------------- MAIN ----------------
-if __name__ == '__main__':
-    if not os.path.exists('uploads'):
-        os.makedirs('uploads')
+# ---------------- INIT ----------------
+if __name__ == "__main__":
+    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
     with app.app_context():
         db.create_all()
