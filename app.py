@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, send_from_directory, flash
+from flask import Flask, render_template, request, redirect, send_from_directory, flash, url_for
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.utils import secure_filename
@@ -12,13 +12,14 @@ import cv2
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
 # 1. Ensure Upload Folder exists immediately on startup
+# This is critical for Render as it starts with a clean filesystem
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
 app = Flask(__name__)
 
-# Use Environment Variable for Secret Key if available (Security Best Practice)
+# Use Environment Variable for Secret Key if available
 app.secret_key = os.environ.get("SECRET_KEY", "supersecretkey")
 
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
@@ -27,8 +28,9 @@ app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 database_url = os.environ.get("DATABASE_URL")
 if database_url and database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql://", 1)
-app.config["SQLALCHEMY_DATABASE_URI"] = database_url or f"sqlite:///{os.path.join(BASE_DIR, 'database.db')}"
 
+# Default to database.db in the base directory
+app.config["SQLALCHEMY_DATABASE_URI"] = database_url or f"sqlite:///{os.path.join(BASE_DIR, 'database.db')}"
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024  # 20MB limit
 
 db = SQLAlchemy(app)
@@ -46,14 +48,14 @@ class User(UserMixin, db.Model):
 
 @login_manager.user_loader
 def load_user(user_id):
-    # Fixed: Using db.session.get instead of the legacy .query.get
+    # Using modern db.session.get for compatibility
     return db.session.get(User, int(user_id))
 
 
 # ---------------- ROUTES ----------------
 @app.route("/")
 def home():
-    return redirect("/login")
+    return redirect(url_for("login"))
 
 
 @app.route("/register", methods=["GET", "POST"])
@@ -62,12 +64,12 @@ def register():
         existing = User.query.filter_by(username=request.form["username"]).first()
         if existing:
             flash("Username already exists")
-            return redirect("/register")
+            return redirect(url_for("register"))
 
         user = User(username=request.form["username"], password=request.form["password"])
         db.session.add(user)
         db.session.commit()
-        return redirect("/login")
+        return redirect(url_for("login"))
 
     return render_template("register.html")
 
@@ -78,7 +80,7 @@ def login():
         user = User.query.filter_by(username=request.form["username"]).first()
         if user and user.password == request.form["password"]:
             login_user(user)
-            return redirect("/dashboard")
+            return redirect(url_for("dashboard"))
         else:
             flash("Invalid credentials")
 
@@ -95,7 +97,7 @@ def dashboard():
 @login_required
 def logout():
     logout_user()
-    return redirect("/login")
+    return redirect(url_for("login"))
 
 
 # ---------------- PDF REDACTION ----------------
@@ -104,42 +106,47 @@ def logout():
 def upload_pdf():
     file = request.files.get("pdf")
     if not file:
-        return "No file uploaded", 400
+        flash("No file uploaded")
+        return redirect(url_for("dashboard"))
 
     filename = secure_filename(file.filename)
     input_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-    output_path = os.path.join(app.config["UPLOAD_FOLDER"], "redacted_" + filename)
+    output_filename = "redacted_" + filename
+    output_path = os.path.join(app.config["UPLOAD_FOLDER"], output_filename)
 
     file.save(input_path)
 
     try:
         doc = fitz.open(input_path)
 
+        # Common PII patterns
         patterns = [
-            r'\b[6-9]\d{9}\b',
-            r'\b\d{4}\s\d{4}\s\d{4}\b',
-            r'\b\d{12}\b',
-            r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b',
-            r'https?://\S+|www\.\S+',
-            r'\b[A-Z]{5}[0-9]{4}[A-Z]\b',
+            r'\b[6-9]\d{9}\b', # Phone numbers
+            r'\b\d{4}\s\d{4}\s\d{4}\b', # Aadhaar style
+            r'\b\d{12}\b', # Simple 12 digit IDs
+            r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', # Emails
+            r'https?://\S+|www\.\S+', # URLs
+            r'\b[A-Z]{5}[0-9]{4}[A-Z]\b', # PAN
             r'\b(password|secret|apikey|token|confidential|otp)\b',
         ]
 
         for page in doc:
-            text = page.get_text()
             for pattern in patterns:
-                matches = re.findall(pattern, text, re.IGNORECASE)
-                for match in matches:
-                    for rect in page.search_for(match):
-                        page.add_redact_annot(rect, fill=(0, 0, 0))
+                # search_for returns a list of Rect objects
+                rects = page.search_for(pattern)
+                for rect in rects:
+                    page.add_redact_annot(rect, fill=(0, 0, 0))
             page.apply_redactions()
 
-        doc.save(output_path)
+        # Save with optimization
+        doc.save(output_path, garbage=3, deflate=True)
         doc.close()
 
-        return render_template("dashboard.html", pdf_file="redacted_" + filename)
+        # Pass the filename specifically for the download button in the template
+        return render_template("dashboard.html", pdf_file=output_filename)
 
     except Exception as e:
+        print(f"PDF Error: {str(e)}")
         return f"PDF Error: {str(e)}", 500
 
 
@@ -171,13 +178,14 @@ def upload_image():
 
     filename = secure_filename(file.filename)
     input_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-    output_path = os.path.join(app.config["UPLOAD_FOLDER"], "blurred_" + filename)
+    output_filename = "blurred_" + filename
+    output_path = os.path.join(app.config["UPLOAD_FOLDER"], output_filename)
 
     file.save(input_path)
 
     try:
         blur_faces(input_path, output_path)
-        return render_template("dashboard.html", image_file="blurred_" + filename)
+        return render_template("dashboard.html", image_file=output_filename)
     except Exception as e:
         return f"Image Error: {str(e)}", 500
 
@@ -186,12 +194,11 @@ def upload_image():
 @app.route("/download/<filename>")
 @login_required
 def download(filename):
+    # This route handles the actual file transfer from the 'uploads' folder
     return send_from_directory(app.config["UPLOAD_FOLDER"], filename, as_attachment=True)
 
 
 # ---------------- INIT ----------------
-# On Render, the folder is created by the top-level code.
-# The following block ensures DB is ready on startup.
 with app.app_context():
     db.create_all()
 
