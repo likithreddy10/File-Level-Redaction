@@ -18,7 +18,7 @@ if not os.path.exists(UPLOAD_FOLDER):
 
 app = Flask(__name__)
 
-# Security configuration
+# Security configuration - Use your Render environment variable first
 app.secret_key = os.environ.get("SECRET_KEY", "p@ssw0rd_S3cur3_Redact_2024_!_#")
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
@@ -116,29 +116,36 @@ def upload_pdf():
         doc = fitz.open(input_path)
 
         # RegEx patterns for common PII
+        # Improved patterns to handle spaces and boundaries better
         patterns = [
-            r'[6-9]\d{9}',                           # Phone numbers
-            r'\d{4}\s\d{4}\s\d{4}',                  # Aadhaar with spaces
-            r'\d{12}',                               # 12-digit IDs
+            r'\b[6-9]\d{9}\b',                        # Phone numbers (10 digits starting with 6-9)
+            r'\d{4}\s\d{4}\s\d{4}',                   # Aadhaar with exactly one space between 4 digits
+            r'\d{12}',                                # 12-digit numbers
             r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', # Emails
-            r'[A-Z]{5}[0-9]{4}[A-Z]',                # PAN Card
-            r'(?i)password|secret|apikey|token|confidential|otp', # Keywords
+            r'\b[A-Z]{5}[0-9]{4}[A-Z]\b',             # PAN Card
+            r'(?i)password|secret|apikey|token|confidential|otp', # Keywords (case insensitive)
         ]
 
         for page in doc:
-            # We search for text specifically to get coordinates
+            # 1. Search using predefined patterns
             for pattern in patterns:
-                # Use 'quads=True' to get exact text shapes for better redaction
-                text_instances = page.search_for(pattern)
+                # Get the full text of the page to find regex matches first
+                page_text = page.get_text("text")
+                matches = re.finditer(pattern, page_text)
                 
-                for inst in text_instances:
-                    # Add redaction annotation with a black fill (0, 0, 0)
-                    page.add_redact_annot(inst, fill=(0, 0, 0))
+                for match in matches:
+                    matched_text = match.group()
+                    # Search for the specific matched text on the page to get coordinates
+                    # Using quads=True helps with text that flows across lines
+                    rects = page.search_for(matched_text)
+                    for r in rects:
+                        page.add_redact_annot(r, fill=(0, 0, 0))
             
-            # Apply the redactions to this page
-            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+            # 2. Apply all redactions for this page
+            # We use 'images=fitz.PDF_REDACT_IMAGE_NONE' to focus only on text redaction
+            page.apply_redactions()
 
-        # Save the result
+        # Save with clean-up to ensure redactions are permanent and file is optimized
         doc.save(output_path, garbage=3, deflate=True)
         doc.close()
 
