@@ -12,24 +12,21 @@ import cv2
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
 # 1. Ensure Upload Folder exists immediately on startup
-# This is critical for Render as it starts with a clean filesystem
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
 app = Flask(__name__)
 
-# Use Environment Variable for Secret Key if available
-app.secret_key = os.environ.get("SECRET_KEY", "supersecretkey")
-
+# Security configuration
+app.secret_key = os.environ.get("SECRET_KEY", "p@ssw0rd_S3cur3_Redact_2024_!_#")
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
-# Check if Render provided a DATABASE_URL, otherwise use local SQLite
+# Database configuration
 database_url = os.environ.get("DATABASE_URL")
 if database_url and database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql://", 1)
 
-# Default to database.db in the base directory
 app.config["SQLALCHEMY_DATABASE_URI"] = database_url or f"sqlite:///{os.path.join(BASE_DIR, 'database.db')}"
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024  # 20MB limit
 
@@ -48,7 +45,6 @@ class User(UserMixin, db.Model):
 
 @login_manager.user_loader
 def load_user(user_id):
-    # Using modern db.session.get for compatibility
     return db.session.get(User, int(user_id))
 
 
@@ -61,7 +57,7 @@ def home():
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
-        existing = User.query.filter_by(username=request.form["username"]).first()
+        existing = db.session.query(User).filter_by(username=request.form["username"]).first()
         if existing:
             flash("Username already exists")
             return redirect(url_for("register"))
@@ -77,7 +73,7 @@ def register():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        user = User.query.filter_by(username=request.form["username"]).first()
+        user = db.session.query(User).filter_by(username=request.form["username"]).first()
         if user and user.password == request.form["password"]:
             login_user(user)
             return redirect(url_for("dashboard"))
@@ -119,30 +115,33 @@ def upload_pdf():
     try:
         doc = fitz.open(input_path)
 
-        # Common PII patterns
+        # RegEx patterns for common PII
         patterns = [
-            r'\b[6-9]\d{9}\b', # Phone numbers
-            r'\b\d{4}\s\d{4}\s\d{4}\b', # Aadhaar style
-            r'\b\d{12}\b', # Simple 12 digit IDs
-            r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b', # Emails
-            r'https?://\S+|www\.\S+', # URLs
-            r'\b[A-Z]{5}[0-9]{4}[A-Z]\b', # PAN
-            r'\b(password|secret|apikey|token|confidential|otp)\b',
+            r'[6-9]\d{9}',                           # Phone numbers
+            r'\d{4}\s\d{4}\s\d{4}',                  # Aadhaar with spaces
+            r'\d{12}',                               # 12-digit IDs
+            r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', # Emails
+            r'[A-Z]{5}[0-9]{4}[A-Z]',                # PAN Card
+            r'(?i)password|secret|apikey|token|confidential|otp', # Keywords
         ]
 
         for page in doc:
+            # We search for text specifically to get coordinates
             for pattern in patterns:
-                # search_for returns a list of Rect objects
-                rects = page.search_for(pattern)
-                for rect in rects:
-                    page.add_redact_annot(rect, fill=(0, 0, 0))
-            page.apply_redactions()
+                # Use 'quads=True' to get exact text shapes for better redaction
+                text_instances = page.search_for(pattern)
+                
+                for inst in text_instances:
+                    # Add redaction annotation with a black fill (0, 0, 0)
+                    page.add_redact_annot(inst, fill=(0, 0, 0))
+            
+            # Apply the redactions to this page
+            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
 
-        # Save with optimization
+        # Save the result
         doc.save(output_path, garbage=3, deflate=True)
         doc.close()
 
-        # Pass the filename specifically for the download button in the template
         return render_template("dashboard.html", pdf_file=output_filename)
 
     except Exception as e:
@@ -154,11 +153,10 @@ def upload_pdf():
 def blur_faces(input_path, output_path):
     img = cv2.imread(input_path)
     if img is None:
-        raise Exception("Invalid image")
+        raise Exception("Invalid image file")
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-
     faces = face_cascade.detectMultiScale(gray, 1.3, 5)
 
     for (x, y, w, h) in faces:
@@ -190,11 +188,10 @@ def upload_image():
         return f"Image Error: {str(e)}", 500
 
 
-# ---------------- DOWNLOAD ----------------
+# ---------------- DOWNLOAD ROUTE ----------------
 @app.route("/download/<filename>")
 @login_required
 def download(filename):
-    # This route handles the actual file transfer from the 'uploads' folder
     return send_from_directory(app.config["UPLOAD_FOLDER"], filename, as_attachment=True)
 
 
