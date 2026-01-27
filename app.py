@@ -11,14 +11,24 @@ import cv2
 # ---------------- CONFIG ----------------
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
+# 1. Ensure Upload Folder exists immediately on startup
 UPLOAD_FOLDER = os.path.join(BASE_DIR, "uploads")
-DB_PATH = os.path.join(BASE_DIR, "database.db")
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
 
 app = Flask(__name__)
-app.secret_key = "supersecretkey"
+
+# Use Environment Variable for Secret Key if available (Security Best Practice)
+app.secret_key = os.environ.get("SECRET_KEY", "supersecretkey")
 
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
-app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DB_PATH}"
+
+# Check if Render provided a DATABASE_URL, otherwise use local SQLite
+database_url = os.environ.get("DATABASE_URL")
+if database_url and database_url.startswith("postgres://"):
+    database_url = database_url.replace("postgres://", "postgresql://", 1)
+app.config["SQLALCHEMY_DATABASE_URI"] = database_url or f"sqlite:///{os.path.join(BASE_DIR, 'database.db')}"
+
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024  # 20MB limit
 
 db = SQLAlchemy(app)
@@ -36,7 +46,8 @@ class User(UserMixin, db.Model):
 
 @login_manager.user_loader
 def load_user(user_id):
-    return User.query.get(int(user_id))
+    # Fixed: Using db.session.get instead of the legacy .query.get
+    return db.session.get(User, int(user_id))
 
 
 # ---------------- ROUTES ----------------
@@ -179,10 +190,10 @@ def download(filename):
 
 
 # ---------------- INIT ----------------
+# On Render, the folder is created by the top-level code.
+# The following block ensures DB is ready on startup.
+with app.app_context():
+    db.create_all()
+
 if __name__ == "__main__":
-    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-    with app.app_context():
-        db.create_all()
-
     app.run(host="0.0.0.0", port=10000)
